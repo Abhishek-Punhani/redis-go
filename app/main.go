@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -12,6 +13,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println("Listening on :6379")
 
 	for {
 		conn, err := ln.Accept()
@@ -25,18 +27,55 @@ func main() {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
+	reader := bufio.NewReader(conn)
 
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		text := scanner.Text()
-		if strings.TrimSpace(text) == "PING" {
-			conn.Write([]byte("+PONG\r\n"))
-		}else{
-			inpString := strings.Split(text, " ")
-			if len(inpString) > 1 && inpString[0] == "ECHO" {
-				fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(inpString[1]), inpString[1])
+	for {
+		// Read array header like "*1\r\n"
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "*") {
+			conn.Write([]byte("-ERR Protocol error\r\n"))
+			return
+		}
+
+		// Number of elements
+		numElems, _ := strconv.Atoi(line[1:])
+
+		// Read each bulk string
+		var parts []string
+		for i := 0; i < numElems; i++ {
+			// Read $<len>
+			_, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			// Read actual data
+			arg, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			parts = append(parts, strings.TrimSpace(arg))
+		}
+
+		// Handle command
+		if len(parts) > 0 {
+			cmd := strings.ToUpper(parts[0])
+			switch cmd {
+			case "PING":
+				conn.Write([]byte("+PONG\r\n"))
+			case "ECHO":
+				if len(parts) > 1 {
+					msg := parts[1]
+					conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)))
+				} else {
+					conn.Write([]byte("$0\r\n\r\n"))
+				}
+			default:
+				conn.Write([]byte("-ERR unknown command\r\n"))
 			}
 		}
-		//conn.Write([]byte("-Error invalid command: '" + text + "'\r\n"))
 	}
 }
