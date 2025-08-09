@@ -34,7 +34,7 @@ func handleConnection(conn net.Conn) {
 		}else{
 			inpString := strings.Split(text, " ")
 			if len(inpString) > 1 && inpString[0] == "ECHO" {
-				conn.Write([]byte(fmt.Sprintf("%s\r\n",inpString[1])))
+				fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(inpString[1]), inpString[1])
 			}
 		}
 		//conn.Write([]byte("-Error invalid command: '" + text + "'\r\n"))
