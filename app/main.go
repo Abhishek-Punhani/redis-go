@@ -102,8 +102,18 @@ func handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			value := parts[2]
+			expiry := time.Time{} // No expiry by default
+			if len(parts) > 4 && strings.ToUpper(parts[3]) == "PX" {
+				expiryMs, err := strconv.Atoi(parts[4])
+				if err != nil {
+					conn.Write([]byte("-ERR invalid expiry value\r\n"))
+					continue
+				}
+				expiry = time.Now().Add(time.Duration(expiryMs) * time.Millisecond)
+			}
+				
 			mu.Lock()
-			store[key] = Entry{Value: value} // No expiry for now
+			store[key] = Entry{Value: value,Expiry: expiry} // No expiry for now
 			mu.Unlock()
 			conn.Write([]byte("+OK\r\n"))
 
