@@ -6,6 +6,20 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+)
+
+// Entry stores value + optional expiry
+type Entry struct {
+	Value  string
+	Expiry time.Time // zero means no expiry
+}
+
+// Thread-safe store
+var (
+	store = make(map[string]Entry)
+	mu    sync.RWMutex
 )
 
 func main() {
@@ -30,7 +44,7 @@ func handleConnection(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 
 	for {
-		// Read array header like "*1\r\n"
+		// Read array header: *<count>
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return
@@ -42,9 +56,13 @@ func handleConnection(conn net.Conn) {
 		}
 
 		// Number of elements
-		numElems, _ := strconv.Atoi(line[1:])
+		numElems, err := strconv.Atoi(line[1:])
+		if err != nil {
+			conn.Write([]byte("-ERR invalid multibulk length\r\n"))
+			return
+		}
 
-		// Read each bulk string
+		// Read arguments
 		var parts []string
 		for i := 0; i < numElems; i++ {
 			// Read $<len>
@@ -52,7 +70,7 @@ func handleConnection(conn net.Conn) {
 			if err != nil {
 				return
 			}
-			// Read actual data
+			// Read data
 			arg, err := reader.ReadString('\n')
 			if err != nil {
 				return
@@ -60,22 +78,53 @@ func handleConnection(conn net.Conn) {
 			parts = append(parts, strings.TrimSpace(arg))
 		}
 
-		// Handle command
-		if len(parts) > 0 {
-			cmd := strings.ToUpper(parts[0])
-			switch cmd {
-			case "PING":
-				conn.Write([]byte("+PONG\r\n"))
-			case "ECHO":
-				if len(parts) > 1 {
-					msg := parts[1]
-					conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)))
-				} else {
-					conn.Write([]byte("$0\r\n\r\n"))
-				}
-			default:
-				conn.Write([]byte("-ERR unknown command\r\n"))
+		if len(parts) == 0 {
+			continue
+		}
+
+		cmd := strings.ToUpper(parts[0])
+		switch cmd {
+		case "PING":
+			conn.Write([]byte("+PONG\r\n"))
+
+		case "ECHO":
+			if len(parts) > 1 {
+				msg := parts[1]
+				conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)))
+			} else {
+				conn.Write([]byte("$0\r\n\r\n"))
 			}
+
+		case "SET":
+			if len(parts) < 3 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'SET'\r\n"))
+				continue
+			}
+			key := parts[1]
+			value := parts[2]
+			mu.Lock()
+			store[key] = Entry{Value: value} // No expiry for now
+			mu.Unlock()
+			conn.Write([]byte("+OK\r\n"))
+
+		case "GET":
+			if len(parts) < 2 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'GET'\r\n"))
+				continue
+			}
+			key := parts[1]
+			mu.RLock()
+			entry, exists := store[key]
+			mu.RUnlock()
+
+			if !exists || (entry.Expiry.After(time.Time{}) && time.Now().After(entry.Expiry)) {
+				conn.Write([]byte("$-1\r\n")) // Null bulk string
+			} else {
+				conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(entry.Value), entry.Value)))
+			}
+
+		default:
+			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
 	}
 }
