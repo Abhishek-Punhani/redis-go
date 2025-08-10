@@ -1,14 +1,15 @@
 package main
 
 import (
-    "net"
-    "fmt"
-    "strings"
-    "strconv"
-    "time"
 	"bufio"
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 )
+
 func getListLock(key string) *sync.Mutex {
 	listLocksMu.Lock()
 	defer listLocksMu.Unlock()
@@ -124,4 +125,49 @@ func handleRPush(conn net.Conn, parts []string) {
 
 	list_store[key] = append(list_store[key], values...)
 	fmt.Fprintf(conn, ":%d\r\n", len(list_store[key]))
+}
+
+func handleLRange(conn net.Conn, parts []string) {
+	if len(parts) < 3 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'LRANGE'\r\n"))
+		return
+	}
+	key := parts[1]
+	start, err := strconv.Atoi(parts[2])
+	if err != nil {
+		conn.Write([]byte("-ERR invalid start index\r\n"))
+		return
+	}
+	end, err := strconv.Atoi(parts[3])
+	if err != nil {
+		conn.Write([]byte("-ERR invalid end index\r\n"))
+		return
+	}
+
+	listLock := getListLock(key)
+	listLock.Lock()
+	defer listLock.Unlock()
+
+	values, ok := list_store[key]
+	if !ok {
+		conn.Write([]byte("*0\r\n"))
+		return
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end >= len(values) {
+		end = len(values) - 1
+	}
+	if start < 0 || end >= len(values) || start > end {
+		conn.Write([]byte("*0\r\n"))
+		return
+	}
+
+	result := values[start : end+1]
+	// Write RESP array header
+	fmt.Fprintf(conn, "*%d\r\n", len(result))
+	for _, v := range result {
+		fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(v), v)
+	}
 }
