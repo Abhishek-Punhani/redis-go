@@ -79,6 +79,8 @@ func handleConnection(conn net.Conn) {
 			handleLPush(conn, parts)
 		case "LRANGE":
 			handleLRange(conn, parts)
+		case "LLEN":
+			handleLLen(conn, parts)
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}

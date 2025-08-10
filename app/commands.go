@@ -200,3 +200,18 @@ func handleLPush(conn net.Conn, parts []string) {
 	fmt.Printf("LPUSH updated list for key '%s': %v\n", key, list_store[key])
 	fmt.Fprintf(conn, ":%d\r\n", len(list_store[key]))
 }
+
+func handleLLen(conn net.Conn, parts []string) {
+	if len(parts) < 2 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'LLEN'\r\n"))
+		return
+	}
+	key := parts[1]
+
+	listLock := getListLock(key)
+	listLock.Lock()
+	defer listLock.Unlock()
+
+	length := len(list_store[key])
+	fmt.Fprintf(conn, ":%d\r\n", length)
+}
