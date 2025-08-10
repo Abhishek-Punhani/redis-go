@@ -26,8 +26,6 @@ var (
 	listLocksMu sync.Mutex // protects listLocks map
 )
 
-
-
 func main() {
 	ln := startServer(":6379")
 	defer ln.Close()
@@ -81,6 +79,8 @@ func handleConnection(conn net.Conn) {
 			handleLRange(conn, parts)
 		case "LLEN":
 			handleLLen(conn, parts)
+		case "LPOP":
+			handleLPop(conn, parts)
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}

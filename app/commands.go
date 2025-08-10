@@ -215,3 +215,25 @@ func handleLLen(conn net.Conn, parts []string) {
 	length := len(list_store[key])
 	fmt.Fprintf(conn, ":%d\r\n", length)
 }
+
+func handleLPop(conn net.Conn, parts []string) {
+	if len(parts) < 2 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'LPOP'\r\n"))
+		return
+	}
+	key := parts[1]
+
+	listLock := getListLock(key)
+	listLock.Lock()
+	defer listLock.Unlock()
+
+	values, ok := list_store[key]
+	if !ok || len(values) == 0 {
+		conn.Write([]byte("$-1\r\n")) // Null bulk string
+		return
+	}
+
+	value := values[0]
+	list_store[key] = values[1:]
+	fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(value), value)
+}
