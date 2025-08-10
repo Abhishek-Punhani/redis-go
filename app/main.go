@@ -83,6 +83,8 @@ func handleConnection(conn net.Conn) {
 			handleLPop(conn, parts)
 		case "BLPOP":
 			handleBLPop(conn, parts)
+		case "TYPE":
+			handleType(conn, parts)
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}

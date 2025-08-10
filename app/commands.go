@@ -311,3 +311,31 @@ func handleBLPop(conn net.Conn, parts []string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+
+func handleType(conn net.Conn, parts []string) {
+	if len(parts) < 2 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'TYPE'\r\n"))
+		return
+	}
+	key := parts[1]
+
+	mu.RLock()
+	entry, exists := store[key]
+	mu.RUnlock()
+
+	if !exists {
+		conn.Write([]byte(fmt.Sprintf("$4\r\n%s\r\n", "none")))
+		return
+	}
+
+	if entry.Expiry.After(time.Time{}) && time.Now().After(entry.Expiry) {
+		mu.Lock()
+		delete(store, key)
+		mu.Unlock()
+		conn.Write([]byte(fmt.Sprintf("$4\r\n%s\r\n", "none")))
+		return
+	}
+
+	conn.Write([]byte(fmt.Sprintf("$6\r\n%s\r\n", "string")))
+}
