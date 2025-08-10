@@ -241,7 +241,6 @@ func handleLPop(conn net.Conn, parts []string) {
 		return
 	}
 
-	// If only one element is requested, return as bulk string
 	if turns == 1 {
 		value := values[0]
 		list_store[key] = values[1:]
@@ -252,7 +251,6 @@ func handleLPop(conn net.Conn, parts []string) {
 		return
 	}
 
-	// If multiple elements are requested, return as array
 	conn.Write([]byte(fmt.Sprintf("*%d\r\n", turns)))
 	for i := 0; i < turns && len(values) > 0; i++ {
 		value := values[0]
@@ -262,5 +260,54 @@ func handleLPop(conn net.Conn, parts []string) {
 	list_store[key] = values
 	if len(values) == 0 {
 		delete(list_store, key)
+	}
+}
+
+func handleBLPop(conn net.Conn, parts []string) {
+	if len(parts) < 2 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'BLPOP'\r\n"))
+		return
+	}
+	key := parts[1]
+	timeout := -1.0
+	if len(parts) > 2 {
+		var err error
+		timeout, err = strconv.ParseFloat(parts[2], 64)
+
+		if err != nil || timeout < 0 {
+			conn.Write([]byte("-ERR invalid timeout value\r\n"))
+			return
+		}
+	}
+
+	start := time.Now()
+	for {
+		listLock := getListLock(key)
+		listLock.Lock()
+		values, ok := list_store[key]
+		if ok && len(values) > 0 {
+			if timeout > 0 {
+				time.Sleep(time.Duration(timeout) * time.Millisecond)
+			}
+			value := values[0]
+			list_store[key] = values[1:]
+			listLock.Unlock()
+			// RESP array: [key, value]
+			fmt.Fprintf(conn, "*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
+			if len(list_store[key]) == 0 {
+				// Clean up empty list
+				listLock.Lock()
+				delete(list_store, key)
+				listLock.Unlock()
+			}
+			return
+		}
+		listLock.Unlock()
+
+		if timeout > 0 && time.Since(start) >= time.Duration(timeout*float64(time.Second)) {
+			conn.Write([]byte("$-1\r\n"))
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
