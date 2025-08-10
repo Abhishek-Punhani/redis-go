@@ -153,11 +153,22 @@ func handleLRange(conn net.Conn, parts []string) {
 		conn.Write([]byte("*0\r\n"))
 		return
 	}
+	if start < 0 && end < 0 {
+		start += len(values)
+		end += len(values)
+	}
+	if end < 0 {
+		end += len(values)
+	}
 	if start < 0 {
 		start = 0
 	}
 	if end >= len(values) {
 		end = len(values) - 1
+	}
+	if start >= len(values) {
+		conn.Write([]byte("*0\r\n"))
+		return
 	}
 	if start < 0 || end >= len(values) || start > end {
 		conn.Write([]byte("*0\r\n"))
