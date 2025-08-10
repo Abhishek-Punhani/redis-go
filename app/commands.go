@@ -182,3 +182,21 @@ func handleLRange(conn net.Conn, parts []string) {
 		fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(v), v)
 	}
 }
+
+func handleLPush(conn net.Conn, parts []string) {
+	if len(parts) < 3 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'LPUSH'\r\n"))
+		return
+	}
+	key := parts[1]
+	values := parts[2:]
+	fmt.Println("LPUSH values:", values)
+	listLock := getListLock(key)
+	listLock.Lock()
+	defer listLock.Unlock()
+	for i := 0; i < len(values); i++ {
+		list_store[key] = append([]string{values[i]}, list_store[key]...)
+	}
+	fmt.Printf("LPUSH updated list for key '%s': %v\n", key, list_store[key])
+	fmt.Fprintf(conn, ":%d\r\n", len(list_store[key]))
+}
