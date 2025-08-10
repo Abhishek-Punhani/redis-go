@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,15 +17,20 @@ type Entry struct {
 
 // Thread-safe store
 var (
-	store = make(map[string]Entry)
-	mu    sync.RWMutex
+	store      = make(map[string]Entry)
+	mu         sync.RWMutex
+	list_store = make(map[string][]string)
+
+	// Per-list locks for fine-grained locking on lists
+	listLocks   = make(map[string]*sync.Mutex)
+	listLocksMu sync.Mutex // protects listLocks map
 )
 
+
+
 func main() {
-	ln, err := net.Listen("tcp", ":6379")
-	if err != nil {
-		panic(err)
-	}
+	ln := startServer(":6379")
+	defer ln.Close()
 	fmt.Println("Listening on :6379")
 
 	for {
@@ -39,45 +43,22 @@ func main() {
 	}
 }
 
+func startServer(addr string) net.Listener {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		panic(err)
+	}
+	return ln
+}
+
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
-
 	for {
-		// Read array header: *<count>
-		line, err := reader.ReadString('\n')
+		parts, err := readCommand(reader, conn)
 		if err != nil {
 			return
 		}
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "*") {
-			conn.Write([]byte("-ERR Protocol error\r\n"))
-			return
-		}
-
-		// Number of elements
-		numElems, err := strconv.Atoi(line[1:])
-		if err != nil {
-			conn.Write([]byte("-ERR invalid multibulk length\r\n"))
-			return
-		}
-
-		// Read arguments
-		var parts []string
-		for i := 0; i < numElems; i++ {
-			// Read $<len>
-			_, err := reader.ReadString('\n')
-			if err != nil {
-				return
-			}
-			// Read data
-			arg, err := reader.ReadString('\n')
-			if err != nil {
-				return
-			}
-			parts = append(parts, strings.TrimSpace(arg))
-		}
-
 		if len(parts) == 0 {
 			continue
 		}
@@ -85,54 +66,15 @@ func handleConnection(conn net.Conn) {
 		cmd := strings.ToUpper(parts[0])
 		switch cmd {
 		case "PING":
-			conn.Write([]byte("+PONG\r\n"))
-
+			handlePing(conn)
 		case "ECHO":
-			if len(parts) > 1 {
-				msg := parts[1]
-				conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)))
-			} else {
-				conn.Write([]byte("$0\r\n\r\n"))
-			}
-
+			handleEcho(conn, parts)
 		case "SET":
-			if len(parts) < 3 {
-				conn.Write([]byte("-ERR wrong number of arguments for 'SET'\r\n"))
-				continue
-			}
-			key := parts[1]
-			value := parts[2]
-			expiry := time.Time{} // No expiry by default
-			if len(parts) > 4 && strings.ToUpper(parts[3]) == "PX" {
-				expiryMs, err := strconv.Atoi(parts[4])
-				if err != nil {
-					conn.Write([]byte("-ERR invalid expiry value\r\n"))
-					continue
-				}
-				expiry = time.Now().Add(time.Duration(expiryMs) * time.Millisecond)
-			}
-				
-			mu.Lock()
-			store[key] = Entry{Value: value,Expiry: expiry} // No expiry for now
-			mu.Unlock()
-			conn.Write([]byte("+OK\r\n"))
-
+			handleSet(conn, parts)
 		case "GET":
-			if len(parts) < 2 {
-				conn.Write([]byte("-ERR wrong number of arguments for 'GET'\r\n"))
-				continue
-			}
-			key := parts[1]
-			mu.RLock()
-			entry, exists := store[key]
-			mu.RUnlock()
-
-			if !exists || (entry.Expiry.After(time.Time{}) && time.Now().After(entry.Expiry)) {
-				conn.Write([]byte("$-1\r\n")) // Null bulk string
-			} else {
-				conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(entry.Value), entry.Value)))
-			}
-
+			handleGet(conn, parts)
+		case "RPUSH":
+			handleRPush(conn, parts)
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
