@@ -222,18 +222,45 @@ func handleLPop(conn net.Conn, parts []string) {
 		return
 	}
 	key := parts[1]
-
+	turns := 1
+	if len(parts) > 2 {
+		var err error
+		turns, err = strconv.Atoi(parts[2])
+		if err != nil || turns < 1 {
+			conn.Write([]byte("-ERR invalid number of turns\r\n"))
+			return
+		}
+	}
 	listLock := getListLock(key)
 	listLock.Lock()
 	defer listLock.Unlock()
 
 	values, ok := list_store[key]
-	if !ok || len(values) == 0 {
+	if !ok || len(values) == 0 || turns > len(values) {
 		conn.Write([]byte("$-1\r\n")) // Null bulk string
 		return
 	}
 
-	value := values[0]
-	list_store[key] = values[1:]
-	fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(value), value)
+	// If only one element is requested, return as bulk string
+	if turns == 1 {
+		value := values[0]
+		list_store[key] = values[1:]
+		conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)))
+		if len(list_store[key]) == 0 {
+			delete(list_store, key)
+		}
+		return
+	}
+
+	// If multiple elements are requested, return as array
+	conn.Write([]byte(fmt.Sprintf("*%d\r\n", turns)))
+	for i := 0; i < turns && len(values) > 0; i++ {
+		value := values[0]
+		values = values[1:]
+		conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)))
+	}
+	list_store[key] = values
+	if len(values) == 0 {
+		delete(list_store, key)
+	}
 }
