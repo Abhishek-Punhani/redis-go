@@ -10,6 +10,22 @@ import (
 	"time"
 )
 
+func parseStreamID(id string) (ms int64, seq int64, err error) {
+	parts := strings.Split(id, "-")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid id format")
+	}
+	ms, err = strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	seq, err = strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	return ms, seq, nil
+}
+
 func getListLock(key string) *sync.Mutex {
 	listLocksMu.Lock()
 	defer listLocksMu.Unlock()
@@ -357,9 +373,31 @@ func handleXAdd(conn net.Conn, parts []string) {
 		fields[parts[i]] = parts[i+1]
 	}
 
-	streamsMu.Lock()
-	streams[key] = append(streams[key], StreamEntry{ID: id, Fields: fields})
-	streamsMu.Unlock()
+	newMs, newSeq, err := parseStreamID(id)
+	if err != nil {
+		conn.Write([]byte("-ERR invalid stream ID format\r\n"))
+		return
+	}
+	if newMs == 0 && newSeq == 0 {
+		conn.Write([]byte("-ERR The ID specified in XADD must be greater than 0-0\r\n"))
+		return
+	}
 
+	streamsMu.Lock()
+	defer streamsMu.Unlock()
+	entries := streams[key]
+	if len(entries) > 0 {
+		last := entries[len(entries)-1]
+		lastMs, lastSeq, err := parseStreamID(last.ID)
+		if err != nil {
+			conn.Write([]byte("-ERR internal stream ID error\r\n"))
+			return
+		}
+		if newMs < lastMs || (newMs == lastMs && newSeq <= lastSeq) {
+			conn.Write([]byte("-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"))
+			return
+		}
+	}
+	streams[key] = append(streams[key], StreamEntry{ID: id, Fields: fields})
 	conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(id), id)))
 }
