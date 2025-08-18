@@ -373,8 +373,39 @@ func handleXAdd(conn net.Conn, parts []string) {
 		fields[parts[i]] = parts[i+1]
 	}
 
+	if strings.HasSuffix(id, "-*") || id == "*" {
+		ms := time.Now().UnixMilli()
+		if id != "*" {
+			timePart := strings.TrimSuffix(id, "-*")
+			ms_, err := strconv.ParseInt(timePart, 10, 64)
+			if err != nil || ms_ < 0 {
+				conn.Write([]byte("-ERR invalid stream ID format\r\n"))
+				return
+			}
+			ms = ms_
+		}
+		seq := int64(0)
+		streamsMu.Lock()
+		entries := streams[key]
+		for _, entry := range entries {
+			entryMs, entrySeq, err := parseStreamID(entry.ID)
+			if err == nil && entryMs == ms && entrySeq >= seq {
+				seq = entrySeq + 1
+			}
+		}
+		if ms == 0 && seq == 0 && len(entries) == 0 {
+			seq = 1
+		}
+		id = fmt.Sprintf("%d-%d", ms, seq)
+		streams[key] = append(streams[key], StreamEntry{ID: id, Fields: fields})
+		streamsMu.Unlock()
+		conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(id), id)))
+		return
+	}
+
+	// Existing explicit ID logic
 	newMs, newSeq, err := parseStreamID(id)
-	if err != nil {
+	if err != nil || (newMs < 0 || newSeq < 0) {
 		conn.Write([]byte("-ERR invalid stream ID format\r\n"))
 		return
 	}
