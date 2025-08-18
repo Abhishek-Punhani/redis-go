@@ -556,23 +556,43 @@ func handleXRead(conn net.Conn, part []string) {
 				resp.WriteString(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n*0\r\n", len(key), key))
 				continue
 			}
-			ms, sq, err := parseStreamID(ids[i])
-			if err != nil {
-				conn.Write([]byte("-ERR invalid stream ID format\r\n"))
-				return
-			}
 			var matching []StreamEntry
-			found := false
-			for _, entry := range entries {
-				entryMs, entrySeq, err := parseStreamID(entry.ID)
+			if ids[i] == "$" {
+				lastIdx := len(entries) - 1
+				for {
+					streamsMu.RLock()
+					entries, ok = streams[key]
+					streamsMu.RUnlock()
+
+					if ok && len(entries)-1 > lastIdx {
+						matching = append(matching, entries[lastIdx+1:]...)
+						foundAny = true
+						break
+					}
+					if blockMs > 0 && time.Since(start) >= time.Duration(blockMs)*time.Millisecond {
+						conn.Write([]byte("$-1\r\n"))
+						return
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			} else {
+				ms, sq, err := parseStreamID(ids[i])
 				if err != nil {
-					continue
+					conn.Write([]byte("-ERR invalid stream ID format\r\n"))
+					return
 				}
-				if !found && (entryMs > ms || (entryMs == ms && entrySeq > sq)) {
-					found = true
-				}
-				if found {
-					matching = append(matching, entry)
+				found := false
+				for _, entry := range entries {
+					entryMs, entrySeq, err := parseStreamID(entry.ID)
+					if err != nil {
+						continue
+					}
+					if !found && (entryMs > ms || (entryMs == ms && entrySeq > sq)) {
+						found = true
+					}
+					if found {
+						matching = append(matching, entry)
+					}
 				}
 			}
 			resp.WriteString(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n", len(key), key))
