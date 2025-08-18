@@ -432,3 +432,87 @@ func handleXAdd(conn net.Conn, parts []string) {
 	streams[key] = append(streams[key], StreamEntry{ID: id, Fields: fields})
 	conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(id), id)))
 }
+
+func handleXRange(conn net.Conn, parts []string) {
+	if len(parts) != 4 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'XRANGE'\r\n"))
+		return
+	}
+	key := parts[1]
+	startID := parts[2]
+	if startID == "-" {
+		startID = "0-1"
+	}
+	endID := parts[3]
+	maxId:= strconv.FormatInt(1<<63-1, 10)
+	if endID == "+" {
+		endID = maxId + "-" + maxId
+	}
+
+	streamsMu.RLock()
+	entries, ok := streams[key]
+	streamsMu.RUnlock()
+	if !ok || len(entries) == 0 {
+		conn.Write([]byte("*0\r\n"))
+		return
+	}
+
+	// Parse start and end IDs, defaulting sequence part if missing
+	parseID := func(id string, isStart bool) (int64, int64, error) {
+		parts := strings.Split(id, "-")
+		if len(parts) == 1 {
+			seq := int64(0)
+			if !isStart {
+				seq = 1<<63 - 1 // max int64
+			}
+			ms, err := strconv.ParseInt(parts[0], 10, 64)
+			return ms, seq, err
+		}
+		ms, err1 := strconv.ParseInt(parts[0], 10, 64)
+		seq, err2 := strconv.ParseInt(parts[1], 10, 64)
+		if err1 != nil {
+			return 0, 0, err1
+		}
+		if err2 != nil {
+			return 0, 0, err2
+		}
+		return ms, seq, nil
+	}
+
+	startMs, startSeq, err := parseID(startID, true)
+	if err != nil {
+		conn.Write([]byte("-ERR invalid start ID\r\n"))
+		return
+	}
+	endMs, endSeq, err := parseID(endID, false)
+	if err != nil {
+		conn.Write([]byte("-ERR invalid end ID\r\n"))
+		return
+	}
+
+	// Collect matching entries
+	var resp strings.Builder
+	var selected []StreamEntry
+	for _, entry := range entries {
+		entryMs, entrySeq, err := parseStreamID(entry.ID)
+		if err != nil {
+			continue
+		}
+		// Check if entry.ID in [startID, endID]
+		if (entryMs > startMs || (entryMs == startMs && entrySeq >= startSeq)) &&
+			(entryMs < endMs || (entryMs == endMs && entrySeq <= endSeq)) {
+			selected = append(selected, entry)
+		}
+	}
+	resp.WriteString(fmt.Sprintf("*%d\r\n", len(selected)))
+	for _, entry := range selected {
+		resp.WriteString("*2\r\n")
+		resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(entry.ID), entry.ID))
+		// Write fields as RESP array
+		resp.WriteString(fmt.Sprintf("*%d\r\n", len(entry.Fields)*2))
+		for k, v := range entry.Fields {
+			resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v))
+		}
+	}
+	conn.Write([]byte(resp.String()))
+}
