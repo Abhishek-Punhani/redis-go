@@ -444,7 +444,7 @@ func handleXRange(conn net.Conn, parts []string) {
 		startID = "0-1"
 	}
 	endID := parts[3]
-	maxId:= strconv.FormatInt(1<<63-1, 10)
+	maxId := strconv.FormatInt(1<<63-1, 10)
 	if endID == "+" {
 		endID = maxId + "-" + maxId
 	}
@@ -512,6 +512,78 @@ func handleXRange(conn net.Conn, parts []string) {
 		resp.WriteString(fmt.Sprintf("*%d\r\n", len(entry.Fields)*2))
 		for k, v := range entry.Fields {
 			resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v))
+		}
+	}
+	conn.Write([]byte(resp.String()))
+}
+
+func handleXRead(conn net.Conn, part []string) {
+	if len(part) < 3 || strings.ToUpper(part[1]) != "STREAMS" {
+		conn.Write([]byte("-ERR wrong number of arguments for 'XREAD'\r\n"))
+		return
+	}
+	if len(part) > 4 && len(part)%2 != 0 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'XREAD'\r\n"))
+		return
+	}
+
+	queries := make(map[string]string)
+	entry_count := len(part[2:]) / 2
+	for idx := 0; idx < entry_count; idx++ {
+		key := part[idx+2]
+		ID := part[idx+entry_count+2]
+		if _, ok := streams[key]; !ok {
+			conn.Write([]byte("-ERR stream does not exist\r\n"))
+			return
+		}
+		if _, _, err := parseStreamID(ID); err != nil {
+			conn.Write([]byte("-ERR invalid stream ID format\r\n"))
+			return
+		}
+		queries[key] = ID
+	}
+	resp := strings.Builder{}
+	resp.WriteString(fmt.Sprintf("*%d\r\n", len(queries)))
+	for key, ID := range queries {
+		streamsMu.RLock()
+		entries, ok := streams[key]
+		streamsMu.RUnlock()
+		if !ok || len(entries) == 0 {
+			resp.WriteString(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n*0\r\n", len(key), key))
+			continue
+		}
+		ms, sq, err := parseStreamID(ID)
+		if err != nil {
+			conn.Write([]byte("-ERR invalid stream ID format\r\n"))
+			return
+		}
+		var matching []StreamEntry
+		found := false
+		for _, entry := range entries {
+			entryMs, entrySeq, err := parseStreamID(entry.ID)
+			if err != nil {
+				continue
+			}
+			if !found && (entryMs > ms || (entryMs == ms && entrySeq > sq)) {
+				found = true
+			}
+			if found {
+				matching = append(matching, entry)
+			}
+		}
+		resp.WriteString(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n", len(key), key))
+		if len(matching) == 0 {
+			resp.WriteString("*0\r\n")
+			continue
+		}
+		resp.WriteString(fmt.Sprintf("*%d\r\n", len(matching)))
+		for _, entry := range matching {
+			resp.WriteString("*2\r\n")
+			resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(entry.ID), entry.ID))
+			resp.WriteString(fmt.Sprintf("*%d\r\n", len(entry.Fields)*2))
+			for k, v := range entry.Fields {
+				resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v))
+			}
 		}
 	}
 	conn.Write([]byte(resp.String()))
