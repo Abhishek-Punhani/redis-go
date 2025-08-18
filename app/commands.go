@@ -518,7 +518,7 @@ func handleXRange(conn net.Conn, parts []string) {
 }
 
 func handleXRead(conn net.Conn, part []string) {
-	if len(part) < 3 || strings.ToUpper(part[1]) != "STREAMS" {
+	if len(part) < 3 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'XREAD'\r\n"))
 		return
 	}
@@ -527,64 +527,78 @@ func handleXRead(conn net.Conn, part []string) {
 		return
 	}
 
-	queries := make(map[string]string)
-	entry_count := len(part[2:]) / 2
-	for idx := 0; idx < entry_count; idx++ {
-		key := part[idx+2]
-		ID := part[idx+entry_count+2]
-		if _, ok := streams[key]; !ok {
-			conn.Write([]byte("-ERR stream does not exist\r\n"))
+	blockMs := 0
+	streamIdx := 2
+	if len(part) > 4 && strings.ToUpper(part[1]) == "BLOCK" {
+		b, err := strconv.Atoi(part[2])
+		if err != nil || b < 0 {
+			conn.Write([]byte("-ERR invalid block value\r\n"))
 			return
 		}
-		if _, _, err := parseStreamID(ID); err != nil {
-			conn.Write([]byte("-ERR invalid stream ID format\r\n"))
-			return
-		}
-		queries[key] = ID
+		blockMs = b
+		streamIdx = 4
 	}
-	resp := strings.Builder{}
-	resp.WriteString(fmt.Sprintf("*%d\r\n", len(queries)))
-	for key, ID := range queries {
-		streamsMu.RLock()
-		entries, ok := streams[key]
-		streamsMu.RUnlock()
-		if !ok || len(entries) == 0 {
-			resp.WriteString(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n*0\r\n", len(key), key))
-			continue
-		}
-		ms, sq, err := parseStreamID(ID)
-		if err != nil {
-			conn.Write([]byte("-ERR invalid stream ID format\r\n"))
-			return
-		}
-		var matching []StreamEntry
-		found := false
-		for _, entry := range entries {
-			entryMs, entrySeq, err := parseStreamID(entry.ID)
-			if err != nil {
+
+	streamCount := (len(part) - streamIdx) / 2
+	keys := part[streamIdx : streamIdx+streamCount]
+	ids := part[streamIdx+streamCount:]
+
+	start := time.Now()
+	for {
+		resp := strings.Builder{}
+		foundAny := false
+		resp.WriteString(fmt.Sprintf("*%d\r\n", len(keys)))
+		for i, key := range keys {
+			streamsMu.RLock()
+			entries, ok := streams[key]
+			streamsMu.RUnlock()
+			if !ok || len(entries) == 0 {
+				resp.WriteString(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n*0\r\n", len(key), key))
 				continue
 			}
-			if !found && (entryMs > ms || (entryMs == ms && entrySeq > sq)) {
-				found = true
+			ms, sq, err := parseStreamID(ids[i])
+			if err != nil {
+				conn.Write([]byte("-ERR invalid stream ID format\r\n"))
+				return
 			}
-			if found {
-				matching = append(matching, entry)
+			var matching []StreamEntry
+			found := false
+			for _, entry := range entries {
+				entryMs, entrySeq, err := parseStreamID(entry.ID)
+				if err != nil {
+					continue
+				}
+				if !found && (entryMs > ms || (entryMs == ms && entrySeq > sq)) {
+					found = true
+				}
+				if found {
+					matching = append(matching, entry)
+				}
+			}
+			resp.WriteString(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n", len(key), key))
+			if len(matching) == 0 {
+				resp.WriteString("*0\r\n")
+			} else {
+				foundAny = true
+				resp.WriteString(fmt.Sprintf("*%d\r\n", len(matching)))
+				for _, entry := range matching {
+					resp.WriteString("*2\r\n")
+					resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(entry.ID), entry.ID))
+					resp.WriteString(fmt.Sprintf("*%d\r\n", len(entry.Fields)*2))
+					for k, v := range entry.Fields {
+						resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v))
+					}
+				}
 			}
 		}
-		resp.WriteString(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n", len(key), key))
-		if len(matching) == 0 {
-			resp.WriteString("*0\r\n")
-			continue
+		if foundAny {
+			conn.Write([]byte(resp.String()))
+			return
 		}
-		resp.WriteString(fmt.Sprintf("*%d\r\n", len(matching)))
-		for _, entry := range matching {
-			resp.WriteString("*2\r\n")
-			resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(entry.ID), entry.ID))
-			resp.WriteString(fmt.Sprintf("*%d\r\n", len(entry.Fields)*2))
-			for k, v := range entry.Fields {
-				resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v))
-			}
+		if blockMs > 0 && time.Since(start) >= time.Duration(blockMs)*time.Millisecond {
+			conn.Write([]byte("$-1\r\n"))
+			return
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	conn.Write([]byte(resp.String()))
 }
