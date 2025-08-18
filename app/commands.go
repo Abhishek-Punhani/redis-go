@@ -312,14 +312,19 @@ func handleBLPop(conn net.Conn, parts []string) {
 	}
 }
 
-
 func handleType(conn net.Conn, parts []string) {
 	if len(parts) < 2 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'TYPE'\r\n"))
 		return
 	}
 	key := parts[1]
-
+	streamsMu.RLock()
+	_, isStream := streams[key]
+	streamsMu.RUnlock()
+	if isStream {
+		conn.Write([]byte("+stream\r\n"))
+		return
+	}
 	mu.RLock()
 	entry, exists := store[key]
 	mu.RUnlock()
@@ -338,4 +343,23 @@ func handleType(conn net.Conn, parts []string) {
 	}
 
 	conn.Write([]byte(fmt.Sprintf("$6\r\n%s\r\n", "string")))
+}
+
+func handleXAdd(conn net.Conn, parts []string) {
+	if len(parts) < 5 || (len(parts)-3)%2 != 0 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'XADD'\r\n"))
+		return
+	}
+	key := parts[1]
+	id := parts[2]
+	fields := make(map[string]string)
+	for i := 3; i < len(parts); i += 2 {
+		fields[parts[i]] = parts[i+1]
+	}
+
+	streamsMu.Lock()
+	streams[key] = append(streams[key], StreamEntry{ID: id, Fields: fields})
+	streamsMu.Unlock()
+
+	conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(id), id)))
 }

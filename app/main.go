@@ -9,13 +9,11 @@ import (
 	"time"
 )
 
-// Entry stores value + optional expiry
 type Entry struct {
 	Value  string
-	Expiry time.Time // zero means no expiry
+	Expiry time.Time
 }
 
-// Thread-safe store
 var (
 	store      = make(map[string]Entry)
 	mu         sync.RWMutex
@@ -23,7 +21,17 @@ var (
 
 	// Per-list locks for fine-grained locking on lists
 	listLocks   = make(map[string]*sync.Mutex)
-	listLocksMu sync.Mutex // protects listLocks map
+	listLocksMu sync.Mutex
+)
+
+type StreamEntry struct {
+	ID     string
+	Fields map[string]string
+}
+
+var (
+	streams   = make(map[string][]StreamEntry)
+	streamsMu sync.RWMutex
 )
 
 func main() {
@@ -85,6 +93,8 @@ func handleConnection(conn net.Conn) {
 			handleBLPop(conn, parts)
 		case "TYPE":
 			handleType(conn, parts)
+		case "XADD":
+			handleXAdd(conn, parts)
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
