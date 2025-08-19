@@ -122,6 +122,12 @@ func handleConnection(conn net.Conn, state *clientState) {
 				conn.Write([]byte("-ERR MULTI calls can not be nested\r\n"))
 				continue
 			}
+			if cmd == "DISCARD" {
+				state.inMulti = false
+				state.queue = nil
+				conn.Write([]byte("+OK\r\n"))
+				continue
+			}
 			state.queue = append(state.queue, parts)
 			conn.Write([]byte("+QUEUED\r\n"))
 			continue
@@ -133,6 +139,8 @@ func handleConnection(conn net.Conn, state *clientState) {
 			conn.Write([]byte("+OK\r\n"))
 		case "EXEC":
 			handleExec(conn, parts, state)
+		case "DISCARD":
+			conn.Write([]byte("-ERR DISCARD without MULTI\r\n"))
 		default:
 			handleCommand(conn, parts)
 		}
