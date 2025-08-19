@@ -99,6 +99,8 @@ func handleConnection(conn net.Conn) {
 			handleXRange(conn, parts)
 		case "XREAD":
 			handleXRead(conn, parts)
+		case "INCR":
+			handleIncr(conn, parts)
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}

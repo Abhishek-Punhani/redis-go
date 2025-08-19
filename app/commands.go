@@ -622,3 +622,30 @@ func handleXRead(conn net.Conn, part []string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func handleIncr(conn net.Conn, parts []string) {
+	if len(parts) < 2 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'INCR'\r\n"))
+		return
+	}
+	key := parts[1]
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	entry, exists := store[key]
+	if !exists || entry.Expiry.After(time.Time{}) && time.Now().After(entry.Expiry) {
+		store[key] = Entry{Value: "1", Expiry: time.Time{}}
+		conn.Write([]byte(":1\r\n"))
+		return
+	}
+
+	value, err := strconv.Atoi(entry.Value)
+	if err != nil {
+		conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+		return
+	}
+	value++
+	store[key] = Entry{Value: strconv.Itoa(value), Expiry: entry.Expiry}
+	conn.Write([]byte(fmt.Sprintf(":%d\r\n", value)))
+}
