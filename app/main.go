@@ -13,21 +13,22 @@ type Entry struct {
 	Value  string
 	Expiry time.Time
 }
-
-var (
-	store      = make(map[string]Entry)
-	mu         sync.RWMutex
-	list_store = make(map[string][]string)
-
-	// Per-list locks for fine-grained locking on lists
-	listLocks   = make(map[string]*sync.Mutex)
-	listLocksMu sync.Mutex
-)
-
 type StreamEntry struct {
 	ID     string
 	Fields map[string]string
 }
+type clientState struct {
+	inMulti bool
+	queue   [][]string
+}
+
+var (
+	store       = make(map[string]Entry)
+	mu          sync.RWMutex
+	list_store  = make(map[string][]string)
+	listLocks   = make(map[string]*sync.Mutex)
+	listLocksMu sync.Mutex
+)
 
 var (
 	streams   = make(map[string][]StreamEntry)
@@ -38,14 +39,17 @@ func main() {
 	ln := startServer(":6379")
 	defer ln.Close()
 	fmt.Println("Listening on :6379")
-
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
-		go handleConnection(conn)
+		state := &clientState{
+			inMulti: false,
+			queue:   nil,
+		}
+		go handleConnection(conn, state)
 	}
 }
 
@@ -57,9 +61,48 @@ func startServer(addr string) net.Listener {
 	return ln
 }
 
-func handleConnection(conn net.Conn) {
+func handleCommand(conn net.Conn, parts []string) {
+	cmd := strings.ToUpper(parts[0])
+	switch cmd {
+	case "PING":
+		handlePing(conn)
+	case "ECHO":
+		handleEcho(conn, parts)
+	case "SET":
+		handleSet(conn, parts)
+	case "GET":
+		handleGet(conn, parts)
+	case "RPUSH":
+		handleRPush(conn, parts)
+	case "LPUSH":
+		handleLPush(conn, parts)
+	case "LRANGE":
+		handleLRange(conn, parts)
+	case "LLEN":
+		handleLLen(conn, parts)
+	case "LPOP":
+		handleLPop(conn, parts)
+	case "BLPOP":
+		handleBLPop(conn, parts)
+	case "TYPE":
+		handleType(conn, parts)
+	case "XADD":
+		handleXAdd(conn, parts)
+	case "XRANGE":
+		handleXRange(conn, parts)
+	case "XREAD":
+		handleXRead(conn, parts)
+	case "INCR":
+		handleIncr(conn, parts)
+	default:
+		conn.Write([]byte("-ERR unknown command\r\n"))
+	}
+}
+
+func handleConnection(conn net.Conn, state *clientState) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
+
 	for {
 		parts, err := readCommand(reader, conn)
 		if err != nil {
@@ -70,39 +113,28 @@ func handleConnection(conn net.Conn) {
 		}
 
 		cmd := strings.ToUpper(parts[0])
+		if state.inMulti {
+			if cmd == "EXEC" {
+				handleExec(conn, parts, state)
+				continue
+			}
+			if cmd == "MULTI" {
+				conn.Write([]byte("-ERR MULTI calls can not be nested\r\n"))
+				continue
+			}
+			state.queue = append(state.queue, parts)
+			conn.Write([]byte("+QUEUED\r\n"))
+			continue
+		}
 		switch cmd {
-		case "PING":
-			handlePing(conn)
-		case "ECHO":
-			handleEcho(conn, parts)
-		case "SET":
-			handleSet(conn, parts)
-		case "GET":
-			handleGet(conn, parts)
-		case "RPUSH":
-			handleRPush(conn, parts)
-		case "LPUSH":
-			handleLPush(conn, parts)
-		case "LRANGE":
-			handleLRange(conn, parts)
-		case "LLEN":
-			handleLLen(conn, parts)
-		case "LPOP":
-			handleLPop(conn, parts)
-		case "BLPOP":
-			handleBLPop(conn, parts)
-		case "TYPE":
-			handleType(conn, parts)
-		case "XADD":
-			handleXAdd(conn, parts)
-		case "XRANGE":
-			handleXRange(conn, parts)
-		case "XREAD":
-			handleXRead(conn, parts)
-		case "INCR":
-			handleIncr(conn, parts)
+		case "MULTI":
+			state.inMulti = true
+			state.queue = nil
+			conn.Write([]byte("+OK\r\n"))
+		case "EXEC":
+			handleExec(conn, parts, state)
 		default:
-			conn.Write([]byte("-ERR unknown command\r\n"))
+			handleCommand(conn, parts)
 		}
 	}
 }

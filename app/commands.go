@@ -649,3 +649,16 @@ func handleIncr(conn net.Conn, parts []string) {
 	store[key] = Entry{Value: strconv.Itoa(value), Expiry: entry.Expiry}
 	conn.Write([]byte(fmt.Sprintf(":%d\r\n", value)))
 }
+
+func handleExec(conn net.Conn, parts []string, state *clientState) {
+	if !state.inMulti {
+		conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
+		return
+	}
+	conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(state.queue))))
+	for _, cmd := range state.queue {
+		handleCommand(conn, cmd)
+	}
+	state.inMulti = false
+	state.queue = nil
+}
