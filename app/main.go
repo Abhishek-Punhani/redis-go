@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -36,9 +37,17 @@ var (
 )
 
 func main() {
-	ln := startServer(":6379")
+	port := "6379"
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--port" && i+1 < len(args) {
+			port = args[i+1]
+			i++
+		}
+	}
+	ln := startServer(":" + port)
 	defer ln.Close()
-	fmt.Println("Listening on :6379")
+	fmt.Printf("Listening on :%s\n", port)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
