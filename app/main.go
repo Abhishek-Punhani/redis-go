@@ -39,10 +39,13 @@ var (
 func main() {
 	port := "6379"
 	args := os.Args[1:]
+	role := "master"
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--port" && i+1 < len(args) {
 			port = args[i+1]
 			i++
+		} else if args[i] == "--replicaof" {
+			role = "slave"
 		}
 	}
 	ln := startServer(":" + port)
@@ -58,7 +61,7 @@ func main() {
 			inMulti: false,
 			queue:   nil,
 		}
-		go handleConnection(conn, state)
+		go handleConnection(conn, state, role)
 	}
 }
 
@@ -70,7 +73,7 @@ func startServer(addr string) net.Listener {
 	return ln
 }
 
-func handleCommand(conn net.Conn, parts []string) {
+func handleCommand(conn net.Conn, parts []string, role string) {
 	cmd := strings.ToUpper(parts[0])
 	switch cmd {
 	case "PING":
@@ -103,12 +106,14 @@ func handleCommand(conn net.Conn, parts []string) {
 		handleXRead(conn, parts)
 	case "INCR":
 		handleIncr(conn, parts)
+	case "INFO":
+		handleInfo(conn, parts, role)
 	default:
 		conn.Write([]byte("-ERR unknown command\r\n"))
 	}
 }
 
-func handleConnection(conn net.Conn, state *clientState) {
+func handleConnection(conn net.Conn, state *clientState, role string) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
@@ -124,7 +129,7 @@ func handleConnection(conn net.Conn, state *clientState) {
 		cmd := strings.ToUpper(parts[0])
 		if state.inMulti {
 			if cmd == "EXEC" {
-				handleExec(conn, parts, state)
+				handleExec(conn, parts, state, role)
 				continue
 			}
 			if cmd == "MULTI" {
@@ -147,11 +152,11 @@ func handleConnection(conn net.Conn, state *clientState) {
 			state.queue = nil
 			conn.Write([]byte("+OK\r\n"))
 		case "EXEC":
-			handleExec(conn, parts, state)
+			handleExec(conn, parts, state, role)
 		case "DISCARD":
 			conn.Write([]byte("-ERR DISCARD without MULTI\r\n"))
 		default:
-			handleCommand(conn, parts)
+			handleCommand(conn, parts, role)
 		}
 	}
 }
