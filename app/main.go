@@ -22,6 +22,12 @@ type clientState struct {
 	inMulti bool
 	queue   [][]string
 }
+type Config struct {
+	Port       string
+	Role       string
+	MasterHost string
+	MasterPort string
+}
 
 var (
 	store       = make(map[string]Entry)
@@ -36,21 +42,29 @@ var (
 	streamsMu sync.RWMutex
 )
 
+
 func main() {
-	port := "6379"
 	args := os.Args[1:]
-	role := "master"
+	config := Config{
+		Port:       "6379",
+		Role:       "master",
+		MasterHost: "",
+		MasterPort: "6379",
+	}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--port" && i+1 < len(args) {
-			port = args[i+1]
+			config.Port = args[i+1]
 			i++
 		} else if args[i] == "--replicaof" {
-			role = "slave"
+			config.Role = "slave"
+			config.MasterHost, config.MasterPort = strings.Split(args[i+1], " ")[0], strings.Split(args[i+1], " ")[1]
+			i++
+			go connectToMaster(config)
 		}
 	}
-	ln := startServer(":" + port)
+	ln := startServer(":" + config.Port)
 	defer ln.Close()
-	fmt.Printf("Listening on :%s\n", port)
+	fmt.Printf("Listening on :%s\n", config.Port)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -61,7 +75,7 @@ func main() {
 			inMulti: false,
 			queue:   nil,
 		}
-		go handleConnection(conn, state, role)
+		go handleConnection(conn, state, config)
 	}
 }
 
@@ -73,9 +87,13 @@ func startServer(addr string) net.Listener {
 	return ln
 }
 
-func handleCommand(conn net.Conn, parts []string, role string) {
+func handleCommand(conn net.Conn, parts []string, config Config) {
 	cmd := strings.ToUpper(parts[0])
 	switch cmd {
+	case "REPLCONF":
+		hadleReplconf(conn, parts, config)
+	case "PSYNC":
+		handlePsync(conn, parts, config)
 	case "PING":
 		handlePing(conn)
 	case "ECHO":
@@ -107,13 +125,13 @@ func handleCommand(conn net.Conn, parts []string, role string) {
 	case "INCR":
 		handleIncr(conn, parts)
 	case "INFO":
-		handleInfo(conn, parts, role)
+		handleInfo(conn, parts, config)
 	default:
 		conn.Write([]byte("-ERR unknown command\r\n"))
 	}
 }
 
-func handleConnection(conn net.Conn, state *clientState, role string) {
+func handleConnection(conn net.Conn, state *clientState, config Config) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
@@ -129,7 +147,7 @@ func handleConnection(conn net.Conn, state *clientState, role string) {
 		cmd := strings.ToUpper(parts[0])
 		if state.inMulti {
 			if cmd == "EXEC" {
-				handleExec(conn, parts, state, role)
+				handleExec(conn, parts, state, config)
 				continue
 			}
 			if cmd == "MULTI" {
@@ -152,11 +170,11 @@ func handleConnection(conn net.Conn, state *clientState, role string) {
 			state.queue = nil
 			conn.Write([]byte("+OK\r\n"))
 		case "EXEC":
-			handleExec(conn, parts, state, role)
+			handleExec(conn, parts, state, config)
 		case "DISCARD":
 			conn.Write([]byte("-ERR DISCARD without MULTI\r\n"))
 		default:
-			handleCommand(conn, parts, role)
+			handleCommand(conn, parts, config)
 		}
 	}
 }
