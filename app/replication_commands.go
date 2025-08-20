@@ -184,6 +184,10 @@ func hadleReplconf(conn net.Conn, parts []string, config *Config) {
 		conn.Write([]byte("-ERR wrong number of arguments for 'replconf' command\r\n"))
 		return
 	}
+	if config.Role == "slave" && strings.ToUpper(parts[1]) == "GETACK" {
+		conn.Write([]byte("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"))
+		return
+	}
 	if config.Role != "master" {
 		conn.Write([]byte("-ERR replconf is only supported in master mode\r\n"))
 		return
