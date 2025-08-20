@@ -650,14 +650,14 @@ func handleIncr(conn net.Conn, parts []string) {
 	conn.Write([]byte(fmt.Sprintf(":%d\r\n", value)))
 }
 
-func handleExec(conn net.Conn, parts []string, state *clientState,config Config) {
+func handleExec(conn net.Conn, parts []string, state *clientState, config *Config) {
 	if !state.inMulti {
 		conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
 		return
 	}
 	conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(state.queue))))
 	for _, cmd := range state.queue {
-		handleCommand(conn, cmd,config)
+		handleCommand(conn, cmd, config)
 	}
 	state.inMulti = false
 	state.queue = nil

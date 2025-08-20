@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
-func connectToMaster(config Config) (net.Conn, error) {
+func connectToMaster(config *Config) (net.Conn, error) {
 	if config.Role != "slave" {
 		return nil, fmt.Errorf("not a slave configuration")
 	}
@@ -88,18 +90,40 @@ func sendReplconfCapa(conn net.Conn, reader *bufio.Reader) error {
 
 func sendPsync(conn net.Conn, reader *bufio.Reader) error {
 	fmt.Fprintf(conn, "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
-	parts, err := readCommand(reader, conn)
+	line, err := reader.ReadString('\n')
 	if err != nil {
-		fmt.Println("Error reading response from master: ", err.Error())
+		fmt.Println("Error reading PSYNC reply from master: ", err)
 		return err
 	}
-	if strings.ToUpper(strings.TrimSpace(parts[0])) != "+FULLRESYNC" {
-		return fmt.Errorf("unexpected response from master: %s", parts[0])
+	if !strings.HasPrefix(strings.TrimSpace(line), "+FULLRESYNC") {
+		return fmt.Errorf("unexpected response from master: %s", line)
+	}
+	// Next the master will send a bulk header for the RDB: $<len>\r\n
+	header, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading RDB header from master:", err)
+		return err
+	}
+	header = strings.TrimSpace(header)
+	if !strings.HasPrefix(header, "$") {
+		return fmt.Errorf("expected bulk header for RDB, got: %s", header)
+	}
+	sizeStr := strings.TrimPrefix(header, "$")
+	size, err := strconv.Atoi(sizeStr)
+	if err != nil {
+		return fmt.Errorf("invalid RDB size: %v", err)
+	}
+
+	// Read the exact number of bytes for the RDB file
+	rdb := make([]byte, size)
+	if _, err := io.ReadFull(reader, rdb); err != nil {
+		fmt.Println("Error reading RDB bytes from master:", err)
+		return err
 	}
 	return nil
 }
 
-func handleInfo(conn net.Conn, parts []string, config Config) {
+func handleInfo(conn net.Conn, parts []string, config *Config) {
 	info := fmt.Sprintf(
 		"# Replication\r\nrole:%s\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\nmaster_repl_offset:0\r\n",
 		config.Role,
@@ -108,7 +132,7 @@ func handleInfo(conn net.Conn, parts []string, config Config) {
 
 }
 
-func hadleReplconf(conn net.Conn, parts []string, config Config) {
+func hadleReplconf(conn net.Conn, parts []string, config *Config) {
 	if len(parts) < 2 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'replconf' command\r\n"))
 		return
@@ -117,12 +141,26 @@ func hadleReplconf(conn net.Conn, parts []string, config Config) {
 		conn.Write([]byte("-ERR replconf is only supported in master mode\r\n"))
 		return
 	}
-
+	if parts[1] == "listening-port" {
+		if len(parts) < 3 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'replconf listening-port' command\r\n"))
+			return
+		}
+		port := parts[2]
+		if _, err := strconv.Atoi(port); err != nil {
+			conn.Write([]byte("-ERR invalid port number\r\n"))
+			return
+		}
+		remote := conn.RemoteAddr().String()
+		fmt.Printf("New replica connected: %s (listening-port=%s)\n", remote, port)
+		config.ReplicaMu.Lock()
+		config.replicaConns[remote] = conn
+		config.ReplicaMu.Unlock()
+	}
 	conn.Write([]byte("+OK\r\n"))
-
 }
 
-func handlePsync(conn net.Conn, parts []string, config Config) {
+func handlePsync(conn net.Conn, parts []string, config *Config) {
 	if len(parts) < 3 || parts[1] != "?" || parts[2] != "-1" {
 		conn.Write([]byte("-ERR wrong number of arguments for 'psync' command\r\n"))
 		return
@@ -141,5 +179,39 @@ func handlePsync(conn net.Conn, parts []string, config Config) {
 		return
 	}
 	fmt.Fprintf(conn, "$%d\r\n%s", len(rdbBytes), rdbBytes)
+}
 
+func buildRespArray(parts []string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("*%d\r\n", len(parts)))
+	for _, p := range parts {
+		sb.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(p), p))
+	}
+	return sb.String()
+}
+
+func propagateToReplicas(parts []string, config *Config) {
+	partsCopy := append([]string(nil), parts...)
+	payload := buildRespArray(partsCopy)
+	config.ReplicaMu.Lock()
+	var activeConns []net.Conn
+	for _, conn := range config.replicaConns {
+		activeConns = append(activeConns, conn)
+	}
+	config.ReplicaMu.Unlock()
+
+	success := 0
+	for _, conn := range activeConns {
+		_, err := conn.Write([]byte(payload))
+		if err != nil {
+			addr := conn.RemoteAddr().String()
+			fmt.Printf("Error sending command to replica %s: %v\n", addr, err)
+			config.ReplicaMu.Lock()
+			delete(config.replicaConns, addr)
+			config.ReplicaMu.Unlock()
+			continue
+		}
+		success++
+	}
+	fmt.Printf("Propagated command to %d live replica connections\n", success)
 }

@@ -23,10 +23,12 @@ type clientState struct {
 	queue   [][]string
 }
 type Config struct {
-	Port       string
-	Role       string
-	MasterHost string
-	MasterPort string
+	Port         string
+	Role         string
+	MasterHost   string
+	MasterPort   string
+	replicaConns map[string]net.Conn
+	ReplicaMu    sync.Mutex
 }
 
 var (
@@ -42,6 +44,16 @@ var (
 	streamsMu sync.RWMutex
 )
 
+var WRITE_COMMANDS = map[string]bool{
+	"SET":    true,
+	"RPUSH":  true,
+	"LPUSH":  true,
+	"XADD":   true,
+	"INCR":   true,
+	"DEL":    true,
+	"LPUSHX": true,
+	"RPUSHX": true,
+}
 
 func main() {
 	args := os.Args[1:]
@@ -50,6 +62,7 @@ func main() {
 		Role:       "master",
 		MasterHost: "",
 		MasterPort: "6379",
+		replicaConns: make(map[string]net.Conn),
 	}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--port" && i+1 < len(args) {
@@ -59,7 +72,7 @@ func main() {
 			config.Role = "slave"
 			config.MasterHost, config.MasterPort = strings.Split(args[i+1], " ")[0], strings.Split(args[i+1], " ")[1]
 			i++
-			go connectToMaster(config)
+			go connectToMaster(&config)
 		}
 	}
 	ln := startServer(":" + config.Port)
@@ -75,7 +88,7 @@ func main() {
 			inMulti: false,
 			queue:   nil,
 		}
-		go handleConnection(conn, state, config)
+		go handleConnection(conn, state, &config)
 	}
 }
 
@@ -87,7 +100,7 @@ func startServer(addr string) net.Listener {
 	return ln
 }
 
-func handleCommand(conn net.Conn, parts []string, config Config) {
+func handleCommand(conn net.Conn, parts []string, config *Config) {
 	cmd := strings.ToUpper(parts[0])
 	switch cmd {
 	case "REPLCONF":
@@ -131,7 +144,7 @@ func handleCommand(conn net.Conn, parts []string, config Config) {
 	}
 }
 
-func handleConnection(conn net.Conn, state *clientState, config Config) {
+func handleConnection(conn net.Conn, state *clientState, config *Config) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
@@ -145,6 +158,9 @@ func handleConnection(conn net.Conn, state *clientState, config Config) {
 		}
 
 		cmd := strings.ToUpper(parts[0])
+		if config.Role == "slave" {
+			fmt.Println("Slave received command:", cmd)
+		}
 		if state.inMulti {
 			if cmd == "EXEC" {
 				handleExec(conn, parts, state, config)
@@ -176,5 +192,10 @@ func handleConnection(conn net.Conn, state *clientState, config Config) {
 		default:
 			handleCommand(conn, parts, config)
 		}
+
+		if config.Role == "master" && WRITE_COMMANDS[cmd] {
+			propagateToReplicas(parts, config)
+		}
+
 	}
 }
