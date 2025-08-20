@@ -58,10 +58,10 @@ var WRITE_COMMANDS = map[string]bool{
 func main() {
 	args := os.Args[1:]
 	config := Config{
-		Port:       "6379",
-		Role:       "master",
-		MasterHost: "",
-		MasterPort: "6379",
+		Port:         "6379",
+		Role:         "master",
+		MasterHost:   "",
+		MasterPort:   "6379",
 		replicaConns: make(map[string]net.Conn),
 	}
 	for i := 0; i < len(args); i++ {
