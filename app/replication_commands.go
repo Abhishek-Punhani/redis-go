@@ -40,53 +40,75 @@ func connectToMaster(config *Config) (net.Conn, error) {
 	}
 	defer conn.Close()
 	for {
-		parts, err := ParseRESP(reader)
+		parts, size, err := ParseRESP(reader)
 		if err != nil {
 			fmt.Println("Error reading RESP from master:", err)
 			conn.Close()
 			return nil, err
 		}
+		if len(parts) == 0 {
+			continue
+		}
+		if strings.ToUpper(parts[0]) == "REPLCONF" && len(parts) > 1 && strings.ToUpper(parts[1]) == "GETACK" {
+			config.ReplicaMu.Lock()
+			offset := config.ReplOffset
+			config.ReplicaMu.Unlock()
+			ack := strconv.FormatInt(offset, 10)
+			fmt.Fprintf(conn, "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%s\r\n", len(ack), ack)
+			config.ReplicaMu.Lock()
+			config.ReplOffset += int64(size)
+			config.ReplicaMu.Unlock()
+			continue
+		}
+
 		handleCommand(conn, parts, config)
+		config.ReplicaMu.Lock()
+		config.ReplOffset += int64(size)
+		config.ReplicaMu.Unlock()
 	}
 }
 
 // ParseRESP parses a RESP array from the reader and returns a slice of strings.
-func ParseRESP(reader *bufio.Reader) ([]string, error) {
+func ParseRESP(reader *bufio.Reader) ([]string, int, error) {
+	total := 0
 	line, err := reader.ReadString('\n')
 	if err != nil {
-		return nil, err
+		return nil, total, err
 	}
+	total += len(line)
 	line = strings.TrimSpace(line)
 	if len(line) == 0 || line[0] != '*' {
-		return nil, fmt.Errorf("expected RESP array, got: %s", line)
+		return nil, total, fmt.Errorf("expected RESP array, got: %s", line)
 	}
 	numElements, err := strconv.Atoi(line[1:])
 	if err != nil {
-		return nil, fmt.Errorf("invalid array length: %v", err)
+		return nil, total, fmt.Errorf("invalid array length: %v", err)
 	}
 	parts := make([]string, 0, numElements)
 	for i := 0; i < numElements; i++ {
 		// Read bulk string header
 		bulkHeader, err := reader.ReadString('\n')
 		if err != nil {
-			return nil, err
+			return nil, total, err
 		}
+		total += len(bulkHeader)
 		bulkHeader = strings.TrimSpace(bulkHeader)
 		if len(bulkHeader) == 0 || bulkHeader[0] != '$' {
-			return nil, fmt.Errorf("expected bulk string, got: %s", bulkHeader)
+			return nil, total, fmt.Errorf("expected bulk string, got: %s", bulkHeader)
 		}
 		strLen, err := strconv.Atoi(bulkHeader[1:])
 		if err != nil {
-			return nil, fmt.Errorf("invalid bulk string length: %v", err)
+			return nil, total, fmt.Errorf("invalid bulk string length: %v", err)
 		}
 		// Read the actual string
 		str := make([]byte, strLen+2) // +2 for \r\n
 		if _, err := io.ReadFull(reader, str); err != nil {
-			return nil, err
+			return nil, total, err
 		}
+		total += len(str)
 		parts = append(parts, string(str[:strLen]))
 	}
-	return parts, nil
+	return parts, total, nil
 }
 
 func sendPing(conn net.Conn, reader *bufio.Reader) error {

@@ -29,6 +29,7 @@ type Config struct {
 	MasterPort   string
 	replicaConns map[string]net.Conn
 	ReplicaMu    sync.Mutex
+	ReplOffset   int64
 }
 
 var (
@@ -108,17 +109,17 @@ func handleCommand(conn net.Conn, parts []string, config *Config) {
 	case "PSYNC":
 		handlePsync(conn, parts, config)
 	case "PING":
-		handlePing(conn)
+		handlePing(conn, config)
 	case "ECHO":
 		handleEcho(conn, parts)
 	case "SET":
-		handleSet(conn, parts)
+		handleSet(conn, parts,config)
 	case "GET":
 		handleGet(conn, parts)
 	case "RPUSH":
-		handleRPush(conn, parts)
+		handleRPush(conn, parts,config)
 	case "LPUSH":
-		handleLPush(conn, parts)
+		handleLPush(conn, parts,config)
 	case "LRANGE":
 		handleLRange(conn, parts)
 	case "LLEN":
@@ -130,13 +131,13 @@ func handleCommand(conn net.Conn, parts []string, config *Config) {
 	case "TYPE":
 		handleType(conn, parts)
 	case "XADD":
-		handleXAdd(conn, parts)
+		handleXAdd(conn, parts,config)
 	case "XRANGE":
 		handleXRange(conn, parts)
 	case "XREAD":
 		handleXRead(conn, parts)
 	case "INCR":
-		handleIncr(conn, parts)
+		handleIncr(conn, parts,config)
 	case "INFO":
 		handleInfo(conn, parts, config)
 	default:

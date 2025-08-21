@@ -69,8 +69,10 @@ func readCommand(reader *bufio.Reader, conn net.Conn) ([]string, error) {
 	return parts, nil
 }
 
-func handlePing(conn net.Conn) {
-	conn.Write([]byte("+PONG\r\n"))
+func handlePing(conn net.Conn, config *Config) {
+	if config.Role == "master" {
+		conn.Write([]byte("+PONG\r\n"))
+	}
 }
 
 func handleEcho(conn net.Conn, parts []string) {
@@ -82,7 +84,7 @@ func handleEcho(conn net.Conn, parts []string) {
 	}
 }
 
-func handleSet(conn net.Conn, parts []string) {
+func handleSet(conn net.Conn, parts []string, config *Config) {
 	if len(parts) < 3 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'SET'\r\n"))
 		return
@@ -102,7 +104,9 @@ func handleSet(conn net.Conn, parts []string) {
 	mu.Lock()
 	store[key] = Entry{Value: value, Expiry: expiry}
 	mu.Unlock()
-	conn.Write([]byte("+OK\r\n"))
+	if config.Role == "master" {
+		conn.Write([]byte("+OK\r\n"))
+	}
 }
 
 func handleGet(conn net.Conn, parts []string) {
@@ -127,7 +131,7 @@ func handleGet(conn net.Conn, parts []string) {
 	conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(entry.Value), entry.Value)))
 }
 
-func handleRPush(conn net.Conn, parts []string) {
+func handleRPush(conn net.Conn, parts []string, config *Config) {
 	if len(parts) < 3 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'RPUSH'\r\n"))
 		return
@@ -140,7 +144,9 @@ func handleRPush(conn net.Conn, parts []string) {
 	defer listLock.Unlock()
 
 	list_store[key] = append(list_store[key], values...)
-	fmt.Fprintf(conn, ":%d\r\n", len(list_store[key]))
+	if config.Role == "master" {
+		fmt.Fprintf(conn, ":%d\r\n", len(list_store[key]))
+	}
 }
 
 func handleLRange(conn net.Conn, parts []string) {
@@ -199,22 +205,22 @@ func handleLRange(conn net.Conn, parts []string) {
 	}
 }
 
-func handleLPush(conn net.Conn, parts []string) {
+func handleLPush(conn net.Conn, parts []string, config *Config) {
 	if len(parts) < 3 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'LPUSH'\r\n"))
 		return
 	}
 	key := parts[1]
 	values := parts[2:]
-	fmt.Println("LPUSH values:", values)
 	listLock := getListLock(key)
 	listLock.Lock()
 	defer listLock.Unlock()
 	for i := 0; i < len(values); i++ {
 		list_store[key] = append([]string{values[i]}, list_store[key]...)
 	}
-	fmt.Printf("LPUSH updated list for key '%s': %v\n", key, list_store[key])
-	fmt.Fprintf(conn, ":%d\r\n", len(list_store[key]))
+	if config.Role == "master" {
+		fmt.Fprintf(conn, ":%d\r\n", len(list_store[key]))
+	}
 }
 
 func handleLLen(conn net.Conn, parts []string) {
@@ -361,7 +367,7 @@ func handleType(conn net.Conn, parts []string) {
 	conn.Write([]byte(fmt.Sprintf("$6\r\n%s\r\n", "string")))
 }
 
-func handleXAdd(conn net.Conn, parts []string) {
+func handleXAdd(conn net.Conn, parts []string, config *Config) {
 	if len(parts) < 5 || (len(parts)-3)%2 != 0 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'XADD'\r\n"))
 		return
@@ -399,7 +405,9 @@ func handleXAdd(conn net.Conn, parts []string) {
 		id = fmt.Sprintf("%d-%d", ms, seq)
 		streams[key] = append(streams[key], StreamEntry{ID: id, Fields: fields})
 		streamsMu.Unlock()
-		conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(id), id)))
+		if config.Role == "master" {
+			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(id), id)))
+		}
 		return
 	}
 
@@ -623,7 +631,7 @@ func handleXRead(conn net.Conn, part []string) {
 	}
 }
 
-func handleIncr(conn net.Conn, parts []string) {
+func handleIncr(conn net.Conn, parts []string,config *Config) {
 	if len(parts) < 2 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'INCR'\r\n"))
 		return
@@ -647,7 +655,9 @@ func handleIncr(conn net.Conn, parts []string) {
 	}
 	value++
 	store[key] = Entry{Value: strconv.Itoa(value), Expiry: entry.Expiry}
-	conn.Write([]byte(fmt.Sprintf(":%d\r\n", value)))
+	if config.Role == "master" {
+		conn.Write([]byte(fmt.Sprintf(":%d\r\n", value)))
+	}
 }
 
 func handleExec(conn net.Conn, parts []string, state *clientState, config *Config) {
