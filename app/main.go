@@ -30,6 +30,7 @@ type Config struct {
 	replicaConns map[string]net.Conn
 	ReplicaMu    sync.Mutex
 	ReplOffset   int64
+	ReplicaAcks  map[string]int64
 }
 
 var (
@@ -64,6 +65,7 @@ func main() {
 		MasterHost:   "",
 		MasterPort:   "6379",
 		replicaConns: make(map[string]net.Conn),
+		ReplicaAcks:  make(map[string]int64),
 	}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--port" && i+1 < len(args) {
@@ -113,13 +115,13 @@ func handleCommand(conn net.Conn, parts []string, config *Config) {
 	case "ECHO":
 		handleEcho(conn, parts)
 	case "SET":
-		handleSet(conn, parts,config)
+		handleSet(conn, parts, config)
 	case "GET":
 		handleGet(conn, parts)
 	case "RPUSH":
-		handleRPush(conn, parts,config)
+		handleRPush(conn, parts, config)
 	case "LPUSH":
-		handleLPush(conn, parts,config)
+		handleLPush(conn, parts, config)
 	case "LRANGE":
 		handleLRange(conn, parts)
 	case "LLEN":
@@ -131,15 +133,17 @@ func handleCommand(conn net.Conn, parts []string, config *Config) {
 	case "TYPE":
 		handleType(conn, parts)
 	case "XADD":
-		handleXAdd(conn, parts,config)
+		handleXAdd(conn, parts, config)
 	case "XRANGE":
 		handleXRange(conn, parts)
 	case "XREAD":
 		handleXRead(conn, parts)
 	case "INCR":
-		handleIncr(conn, parts,config)
+		handleIncr(conn, parts, config)
 	case "INFO":
 		handleInfo(conn, parts, config)
+	case "WAIT":
+		handleWait(conn, parts, config)
 	default:
 		conn.Write([]byte("-ERR unknown command\r\n"))
 	}

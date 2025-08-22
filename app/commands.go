@@ -631,7 +631,7 @@ func handleXRead(conn net.Conn, part []string) {
 	}
 }
 
-func handleIncr(conn net.Conn, parts []string,config *Config) {
+func handleIncr(conn net.Conn, parts []string, config *Config) {
 	if len(parts) < 2 {
 		conn.Write([]byte("-ERR wrong number of arguments for 'INCR'\r\n"))
 		return
@@ -671,4 +671,58 @@ func handleExec(conn net.Conn, parts []string, state *clientState, config *Confi
 	}
 	state.inMulti = false
 	state.queue = nil
+}
+
+func handleWait(conn net.Conn, parts []string, config *Config) {
+	if len(parts) != 3 {
+		conn.Write([]byte("-ERR wrong number of arguments for 'WAIT'\r\n"))
+		return
+	}
+	numReplicas, err := strconv.Atoi(parts[1])
+	if err != nil || numReplicas < 0 {
+		conn.Write([]byte("-ERR invalid number of replicas\r\n"))
+		return
+	}
+	timeoutMs, err := strconv.Atoi(parts[2])
+	if err != nil || timeoutMs < 0 {
+		conn.Write([]byte("-ERR invalid timeout\r\n"))
+		return
+	}
+
+	config.ReplicaMu.Lock()
+	targetOffset := config.ReplOffset
+	config.ReplicaMu.Unlock()
+
+	requestReplicaAcks(config)
+
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	var acked int
+
+	for {
+		config.ReplicaMu.Lock()
+		acked = 0
+		for _, off := range config.ReplicaAcks {
+			if off >= targetOffset {
+				acked++
+			}
+		}
+		config.ReplicaMu.Unlock()
+
+		if acked >= numReplicas || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	fmt.Fprintf(conn, ":%d\r\n", acked)
+}
+func requestReplicaAcks(config *Config) {
+    config.ReplicaMu.Lock()
+    defer config.ReplicaMu.Unlock()
+    for _, rc := range config.replicaConns {
+        if rc == nil {
+            continue
+        }
+        fmt.Fprintf(rc, "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n")
+    }
 }

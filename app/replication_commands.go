@@ -206,12 +206,12 @@ func hadleReplconf(conn net.Conn, parts []string, config *Config) {
 		conn.Write([]byte("-ERR wrong number of arguments for 'replconf' command\r\n"))
 		return
 	}
-	if config.Role == "slave" && strings.ToUpper(parts[1]) == "GETACK" {
-		conn.Write([]byte("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"))
-		return
-	}
+	// if config.Role == "slave" && strings.ToUpper(parts[1]) == "GETACK" {
+	// 	conn.Write([]byte("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"))
+	// 	return
+	// }
 	if config.Role != "master" {
-		conn.Write([]byte("-ERR replconf is only supported in master mode\r\n"))
+		// conn.Write([]byte("-ERR replconf is only supported in master mode\r\n"))
 		return
 	}
 	if parts[1] == "listening-port" {
@@ -228,7 +228,19 @@ func hadleReplconf(conn net.Conn, parts []string, config *Config) {
 		fmt.Printf("New replica connected: %s (listening-port=%s)\n", remote, port)
 		config.ReplicaMu.Lock()
 		config.replicaConns[remote] = conn
+		// Initialize the replica's ACK for WAIT commands.
+		config.ReplicaAcks[remote] = 0
 		config.ReplicaMu.Unlock()
+	}
+	if strings.ToUpper(parts[1]) == "ACK" && len(parts) > 2 {
+		offset, err := strconv.ParseInt(parts[2], 10, 64)
+		if err == nil {
+			addr := conn.RemoteAddr().String()
+			config.ReplicaMu.Lock()
+			config.ReplicaAcks[addr] = offset
+			config.ReplicaMu.Unlock()
+		}
+		return
 	}
 	conn.Write([]byte("+OK\r\n"))
 }
@@ -266,6 +278,14 @@ func buildRespArray(parts []string) string {
 func propagateToReplicas(parts []string, config *Config) {
 	partsCopy := append([]string(nil), parts...)
 	payload := buildRespArray(partsCopy)
+
+	// bump the master's replication offset by the exact bytes we sent
+	size := len(payload)
+	config.ReplicaMu.Lock()
+	config.ReplOffset += int64(size)
+	config.ReplicaMu.Unlock()
+
+	// now send to each live replica
 	config.ReplicaMu.Lock()
 	var activeConns []net.Conn
 	for _, conn := range config.replicaConns {
@@ -275,8 +295,7 @@ func propagateToReplicas(parts []string, config *Config) {
 
 	success := 0
 	for _, conn := range activeConns {
-		_, err := conn.Write([]byte(payload))
-		if err != nil {
+		if _, err := conn.Write([]byte(payload)); err != nil {
 			addr := conn.RemoteAddr().String()
 			fmt.Printf("Error sending command to replica %s: %v\n", addr, err)
 			config.ReplicaMu.Lock()
