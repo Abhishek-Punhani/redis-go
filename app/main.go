@@ -154,6 +154,8 @@ func handleCommand(conn net.Conn, parts []string, config *Config) {
 		handleWait(conn, parts, config)
 	case "CONFIG":
 		handleConfig(conn, parts,config)
+	case "KEYS":
+		handleKeys(conn, parts,config)
 	default:
 		conn.Write([]byte("-ERR unknown command\r\n"))
 	}
