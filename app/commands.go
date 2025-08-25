@@ -717,12 +717,12 @@ func handleWait(conn net.Conn, parts []string, config *Config) {
 	fmt.Fprintf(conn, ":%d\r\n", acked)
 }
 func requestReplicaAcks(config *Config) {
-    config.ReplicaMu.Lock()
-    defer config.ReplicaMu.Unlock()
-    for _, rc := range config.replicaConns {
-        if rc == nil {
-            continue
-        }
-        fmt.Fprintf(rc, "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n")
-    }
+	config.ReplicaMu.Lock()
+	defer config.ReplicaMu.Unlock()
+	for _, rc := range config.replicaConns {
+		if rc == nil {
+			continue
+		}
+		fmt.Fprintf(rc, "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n")
+	}
 }

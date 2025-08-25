@@ -31,6 +31,8 @@ type Config struct {
 	ReplicaMu    sync.Mutex
 	ReplOffset   int64
 	ReplicaAcks  map[string]int64
+	rdb_dir      string
+	rdb_filename string
 }
 
 var (
@@ -76,6 +78,12 @@ func main() {
 			config.MasterHost, config.MasterPort = strings.Split(args[i+1], " ")[0], strings.Split(args[i+1], " ")[1]
 			i++
 			go connectToMaster(&config)
+		} else if args[i] == "--dir" && i+1 < len(args) {
+			config.rdb_dir = args[i+1]
+			i++
+		} else if args[i] == "--dbfilename" && i+1 < len(args) {
+			config.rdb_filename = args[i+1]
+			i++
 		}
 	}
 	ln := startServer(":" + config.Port)
@@ -144,6 +152,8 @@ func handleCommand(conn net.Conn, parts []string, config *Config) {
 		handleInfo(conn, parts, config)
 	case "WAIT":
 		handleWait(conn, parts, config)
+	case "CONFIG":
+		handleConfig(conn, parts,config)
 	default:
 		conn.Write([]byte("-ERR unknown command\r\n"))
 	}
